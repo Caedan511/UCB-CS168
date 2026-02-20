@@ -38,6 +38,21 @@ class IPv4:
     dst: str
 
     def __init__(self, buffer: bytes):
+        bits = ''.join(format(byte, '08b') for byte in [*buffer])
+       
+        self.version = int(bits[0:4],2)
+        self.header_len = int(bits[4:8],2)
+        self.tos = int(bits[8:16],2)
+        self.length = int(bits[16:32],2)
+        self.id = int(bits[32:48],2)
+        self.flags = int(bits[48:51],2)
+        self.frag_offset = int(bits[51:64],2)
+        self.ttl = int(bits[64:72],2)
+        self.proto = int(bits[72:80],2)
+        self.cksum = int(bits[80:96],2) 
+
+        self.src = '.'.join(str(b) for b in buffer[12:16])
+        self.dst = '.'.join(str(b) for b in buffer[16:20])
         pass  # TODO
 
     def __str__(self) -> str:
@@ -60,6 +75,10 @@ class ICMP:
     cksum: int
 
     def __init__(self, buffer: bytes):
+        bits = ''.join(format(byte, '08b') for byte in [*buffer])
+        self.type = int(bits[0:8],2)
+        self.code = int(bits[8:16],2)
+        self.cksum = int(bits[16:32],2)
         pass  # TODO
 
     def __str__(self) -> str:
@@ -79,6 +98,11 @@ class UDP:
     cksum: int
 
     def __init__(self, buffer: bytes):
+        bits = ''.join(format(byte, '08b') for byte in [*buffer])
+        self.src_port = int(bits[0:16],2)
+        self.dst_port = int(bits[16:32],2)
+        self.len = int(bits[32:48],2)
+        self.cksum = int(bits[48:64],2)
         pass  # TODO
 
     def __str__(self) -> str:
@@ -86,6 +110,12 @@ class UDP:
             f"len {self.len}, cksum 0x{self.cksum:x})"
 
 # TODO feel free to add helper functions if you'd like
+def check_ttl_expired(icmp: ICMP):
+    return icmp.type == 11 and icmp.code == 0
+
+def check_port_unreachable(icmp: ICMP):
+    return icmp.type == 3 and icmp.code == 3
+
 
 def traceroute(sendsock: util.Socket, recvsock: util.Socket, ip: str) \
         -> list[list[str]]:
@@ -108,10 +138,40 @@ def traceroute(sendsock: util.Socket, recvsock: util.Socket, ip: str) \
     """
 
     # TODO Add your implementation
-    
+
+    discovered_routers = []
     for ttl in range(1, TRACEROUTE_MAX_TTL+1):
-        util.print_result([], ttl)
-    return []
+        routers = []
+        for _ in range(PROBE_ATTEMPT_COUNT):
+
+            sendsock.set_ttl(ttl)
+            sendsock.sendto("Potato".encode(), (ip, TRACEROUTE_PORT_NUMBER))
+        
+            if recvsock.recv_select():  # Check if there's a packet to process.
+                buf, address = recvsock.recvfrom()  # Receive the packet.
+
+                # Print out the packet for debugging.
+                # print(f"Packet bytes: {buf.hex()}")
+                # print(f"Packet is from IP: {address[0]}")
+                # print(f"Packet is from port: {address[1]}")
+
+                ipv4 = IPv4(buf)
+                if ipv4.proto != 1:
+                    continue
+
+                icmp = ICMP(buf[20:28])
+                if check_ttl_expired(icmp) or check_port_unreachable(icmp):
+                    if address[0] not in routers:
+                        routers.append(address[0])
+
+
+        util.print_result(routers, ttl)
+        discovered_routers.append(routers)
+        if ip in routers:
+            break
+    
+    return discovered_routers
+
 
 
 if __name__ == '__main__':
