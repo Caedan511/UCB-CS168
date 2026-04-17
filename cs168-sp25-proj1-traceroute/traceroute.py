@@ -164,7 +164,6 @@ def traceroute(sendsock: util.Socket, recvsock: util.Socket, ip: str) \
                     if address[0] not in routers:
                         routers.append(address[0])
 
-
         util.print_result(routers, ttl)
         discovered_routers.append(routers)
         if ip in routers:
