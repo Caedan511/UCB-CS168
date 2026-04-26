@@ -140,7 +140,7 @@ def traceroute(sendsock: util.Socket, recvsock: util.Socket, ip: str) \
     # TODO Add your implementation
 
     discovered_routers = []
-    for ttl in range(1, TRACEROUTE_MAX_TTL+1):
+    for ttl in range(1, TRACEROUTE_MAX_TTL + 1):
         routers = []
         for _ in range(PROBE_ATTEMPT_COUNT):
 
@@ -156,7 +156,7 @@ def traceroute(sendsock: util.Socket, recvsock: util.Socket, ip: str) \
                 # print(f"Packet is from port: {address[1]}")
 
                 ipv4 = IPv4(buf)
-                if ipv4.proto != 1:
+                if ipv4.proto != 1: #valid IP Protocol, 1 means ICMP protocol
                     continue
 
                 icmp = ICMP(buf[20:28])
