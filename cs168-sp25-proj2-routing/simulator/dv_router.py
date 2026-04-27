@@ -77,7 +77,7 @@ class DVRouter(DVRouterBase):
         assert port in self.ports.get_all_ports(), "Link should be up, but is not."
 
         ##### Begin Stage 1 #####
-        self.table[host] = TableEntry(dst=host, port=port, latency=0.1, expire_time=FOREVER)
+        self.table[host] = TableEntry(dst=host, port=port, latency=self.ports.get_latency(port), expire_time=FOREVER)
         ##### End Stage 1 #####
 
     def handle_data_packet(self, packet, in_port):
@@ -124,7 +124,13 @@ class DVRouter(DVRouterBase):
         """
         
         ##### Begin Stages 5, 9 #####
-
+        to_be_deleted = []
+        for host, entry in self.table.items():
+            if api.current_time() > entry.expire_time:
+                to_be_deleted.append(host)
+        for host in to_be_deleted:
+            self.table.pop(host)
+            self.log("entry {} has expired".format(host))
         ##### End Stages 5, 9 #####
 
     def handle_route_advertisement(self, route_dst, route_latency, port):
@@ -138,7 +144,19 @@ class DVRouter(DVRouterBase):
         """
         
         ##### Begin Stages 4, 10 #####
-
+        new_link_latency = self.ports.get_latency(port)
+        # if the destination is new, we should just add it to route table
+        if route_dst not in self.table.keys():
+            self.table[route_dst] = TableEntry(dst=route_dst, port=port, 
+                                               latency=route_latency + new_link_latency, 
+                                               expire_time=api.current_time() + self.ROUTE_TTL)
+            return
+        
+        if port == self.table[route_dst].port or route_latency + new_link_latency < self.table[route_dst].latency:
+            self.table[route_dst] = TableEntry(dst=route_dst, port=port, 
+                                               latency=route_latency + new_link_latency, 
+                                               expire_time=api.current_time() + self.ROUTE_TTL)
+        
         ##### End Stages 4, 10 #####
 
     def handle_link_up(self, port, latency):
