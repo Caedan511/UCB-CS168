@@ -24,12 +24,12 @@ class DVRouter(DVRouterBase):
 
     # -----------------------------------------------
     # At most one of these should ever be on at once
-    SPLIT_HORIZON = False
+    SPLIT_HORIZON = True
     POISON_REVERSE = False
     # -----------------------------------------------
 
     # Determines if you send poison for expired routes
-    POISON_EXPIRED = False
+    POISON_EXPIRED = True
 
     # Determines if you send updates when a link comes up
     SEND_ON_LINK_UP = False
@@ -114,6 +114,15 @@ class DVRouter(DVRouterBase):
         ##### Begin Stages 3, 6, 7, 8, 10 #####
         for p in self.ports.get_all_ports():
             for host, entry in self.table.items():
+                if p == entry.port:
+                    if self.SPLIT_HORIZON:
+                        continue
+                    elif self.POISON_REVERSE:
+                        self.send_route(p, entry.dst, INFINITY)
+                        continue
+                if entry.latency > INFINITY:
+                    self.send_route(p, entry.dst, INFINITY)
+                    continue 
                 self.send_route(p, entry.dst, entry.latency)
         ##### End Stages 3, 6, 7, 8, 10 #####
 
@@ -124,13 +133,18 @@ class DVRouter(DVRouterBase):
         """
         
         ##### Begin Stages 5, 9 #####
-        to_be_deleted = []
+        expired_route = []
         for host, entry in self.table.items():
             if api.current_time() > entry.expire_time:
-                to_be_deleted.append(host)
-        for host in to_be_deleted:
-            self.table.pop(host)
-            self.log("entry {} has expired".format(host))
+                expired_route.append(host)
+        for host in expired_route:
+            if self.POISON_EXPIRED:
+                entry = self.table[host]
+                self.table[host] = TableEntry(dst=entry.dst, port=entry.port, 
+                                              latency=INFINITY, expire_time=api.current_time() + self.ROUTE_TTL)
+            else:
+                self.table.pop(host)
+                self.log("entry {} has expired".format(host))
         ##### End Stages 5, 9 #####
 
     def handle_route_advertisement(self, route_dst, route_latency, port):
