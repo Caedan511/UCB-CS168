@@ -485,7 +485,7 @@ class StudentUSocket(StudentUSocketBase):
       raise RuntimeError("close() is invalid in FIN_WAIT states")
     elif self.state is CLOSE_WAIT:
       ## Start of Stage 6.2 ##
-
+      self.fin_ctrl.set_pending(next_state=LAST_ACK)
       ## End of Stage 6.2 ##
       pass
     elif self.state in (CLOSING,LAST_ACK,TIME_WAIT):
@@ -542,7 +542,11 @@ class StudentUSocket(StudentUSocketBase):
     self.bind(dev.ip_addr, 0)
 
     ## Start of Stage 1.1 ##
-
+    p = self.new_packet(ack=False, data=None, syn=True)
+    self.tx(p)
+    self.state = SYN_SENT
+    self.snd.nxt = self.snd.nxt |PLUS| 1 
+    self.snd.una = self.snd.iss |PLUS| 1      # suppose to set the oldest unacked byte
     ## End of Stage 1.1 ##
 
   def tx(self, p, retxed=False):
@@ -561,7 +565,7 @@ class StudentUSocket(StudentUSocketBase):
     if (p.tcp.SYN or p.tcp.FIN or p.tcp.payload) and not retxed:
 
       ## Start of Stage 4.4 ##
-
+      self.snd.nxt = self.snd.nxt |PLUS| len(p.tcp.payload)
       ## End of Stage 4.4 ##
       pass
 
@@ -589,18 +593,22 @@ class StudentUSocket(StudentUSocketBase):
     if self.state is CLOSED:
       return
     ## Start of Stage 1.2 ##
-
+    elif self.state is SYN_SENT:
+      self.handle_synsent(seg)
     ## End of Stage 1.2 ##
     elif self.state in (ESTABLISHED, FIN_WAIT_1, FIN_WAIT_2,
                         CLOSE_WAIT, CLOSING, LAST_ACK, TIME_WAIT):
       if self.acceptable_seg(seg, payload):
         ## Start of Stage 2.1 ##
-        
+        # if seg.seq |EQ| self.rcv.nxt:
+        #   self.handle_accepted_seg(seg, payload)
+        # elif seg.seq |GT| self.rcv.nxt:
+        #   self.set_pending_ack()
         ## End of Stage 2.1 ##
         pass
         ## Start of Stage 3.1 ##
         # you may need to remove Stage 2's code.
-
+        self.rx_queue.push(p)
         ## End of Stage 3.1 ##
       else:
         self.set_pending_ack()
@@ -609,6 +617,15 @@ class StudentUSocket(StudentUSocketBase):
     ## Start of Stage 3.2 ##
     # checking recv queue
     # Hint: data = packet.app[self.rcv.nxt |MINUS| packet.tcp.seq:]
+    while not self.rx_queue.empty():
+      seq, npkg = self.rx_queue.peek()
+      if seq |LE| self.rcv.nxt:
+        self.rx_queue.pop()
+        data = npkg.app[self.rcv.nxt |MINUS| npkg.tcp.seq:]
+        self.handle_accepted_seg(npkg.tcp, data)
+      else:
+        self.set_pending_ack()
+        break
 
     ## End of Stage 3.2 ##
 
@@ -644,10 +661,16 @@ class StudentUSocket(StudentUSocketBase):
 
     if acceptable_ack:
       ## Start of Stage 1.3 ##
+      self.rcv.nxt = seg.seq |PLUS| 1
 
-      if self.snd.una |GT| self.snd.iss:
-        pass
-
+      # self.snd.una = seg.ack
+      # if self.snd.una |GT| self.snd.iss:  # this line has already been provided to check if the seg is acking the SYN you sent,
+      #                                     # but it doesn't work here.
+      if seg.ack |EQ| (self.snd.una |PLUS| 1):
+        self.snd.una = self.snd.una |PLUS| 1
+        self.state = ESTABLISHED
+        self.set_pending_ack()
+        self.update_window(seg)
       ## End of Stage 1.3 ##
 
   def update_rto(self, acked_pkt):
@@ -678,7 +701,10 @@ class StudentUSocket(StudentUSocketBase):
       payload = payload[:rcv.wnd] # Chop to size!
 
     ## Start of Stage 2.3 ##
-
+    rcv.nxt = rcv.nxt |PLUS| len(payload)
+    rcv.wnd = rcv.wnd |MINUS| len(payload)
+    self.rx_data += payload
+    self.set_pending_ack()
     ## End of Stage 2.3 ##
 
   def update_window(self, seg):
@@ -690,10 +716,10 @@ class StudentUSocket(StudentUSocketBase):
     """
 
     ## Start of Stage 5.1 ##
-    self.snd.wnd = self.TX_DATA_MAX # remove when implemented
+    # self.snd.wnd = self.TX_DATA_MAX # remove when implemented
     self.snd.wl1 = seg.seq
     self.snd.wl2 = seg.ack
-
+    self.snd.wnd = seg.win
     ## End of Stage 5.1 ##
 
   def handle_accepted_ack(self, seg):
@@ -704,7 +730,7 @@ class StudentUSocket(StudentUSocketBase):
     acceptable_seg()
     """
     ## Start of Stage 4.2 ##
-
+    self.snd.una = seg.ack
     ## End of Stage 4.2 ##
 
 
@@ -735,7 +761,10 @@ class StudentUSocket(StudentUSocketBase):
     self.log.info("Got FIN!")
 
     ## Start of Stage 6.1 ##
-
+    if self.state == ESTABLISHED:
+      self.rcv.nxt = self.rcv.nxt |PLUS| 1
+      self.set_pending_ack()
+      self.state = CLOSE_WAIT
     ## End of Stage 6.1 ##
 
 
@@ -757,7 +786,10 @@ class StudentUSocket(StudentUSocketBase):
     # fifth, check ACK field
     if self.state in (ESTABLISHED, FIN_WAIT_1, FIN_WAIT_2, CLOSE_WAIT, CLOSING):
       ## Start of Stage 4.1 ##
-
+      if seg.ack |LE| self.snd.nxt and seg.ack |GT| self.snd.una:
+         self.handle_accepted_ack(seg)
+      elif seg.ack |GT| self.snd.nxt:
+        return
       ## End of Stage 4.1 ##
 
       if snd.una |LE| seg.ack and seg.ack |LE| snd.nxt:
@@ -774,6 +806,9 @@ class StudentUSocket(StudentUSocketBase):
     elif self.state == CLOSING:
       pass
     elif self.state == LAST_ACK:
+      suces = self.fin_ctrl.acks_our_fin(seg.ack)
+      if suces:
+        self._delete_tcb()
       pass
     elif self.state == TIME_WAIT:
       # restart the 2 msl timeout
@@ -805,6 +840,8 @@ class StudentUSocket(StudentUSocketBase):
       return
 
     ## Start of Stage 2.2 ##
+    if self.state in (ESTABLISHED, FIN_WAIT_1, FIN_WAIT_2) and len(payload) > 0:
+      self.handle_accepted_payload(payload)
 
     ## End of Stage 2.2 ##
 
@@ -825,12 +862,19 @@ class StudentUSocket(StudentUSocketBase):
     bytes_sent = 0
 
     ## Start of Stage 4.3 ##
-    remaining = 0
+    remaining = snd.una |PLUS| snd.wnd |MINUS| snd.nxt
     while remaining > 0:
-
+      less = min(remaining, self.mss,len(self.tx_data))
+      payload = self.tx_data[:less]
       num_pkts += 1
       bytes_sent += len(payload)
 
+      p = self.new_packet(data=payload)
+      self.tx(p)
+      self.tx_data = self.tx_data[less:]
+      remaining -= less
+      if len(self.tx_data) <= 0:
+        break
     self.log.debug("sent {0} packets with {1} bytes total".format(num_pkts, bytes_sent))
     ## End of Stage 4.3 ##
 
